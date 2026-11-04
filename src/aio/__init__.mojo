@@ -61,18 +61,18 @@ struct Loop(Movable):
     def __deinit__(deinit self):
         _ = external_call["close", Int32](self.epfd)
 
-    def _ctl(mut self, op: Int32, fd: Int32, events: UInt32, token: UInt64) raises:
+    def _ctl(self, op: Int32, fd: Int32, events: UInt32, token: UInt64) raises:
         var ev = SIMD[DType.uint32, 4](events, UInt32(token & 0xFFFFFFFF), UInt32(token >> 32), 0)
         if external_call["epoll_ctl", Int32](self.epfd, op, fd, Pointer(to=ev)) != 0:
             raise _fail("epoll_ctl")
 
-    def add(mut self, fd: Int32, events: UInt32, token: UInt64) raises:
+    def add(self, fd: Int32, events: UInt32, token: UInt64) raises:
         self._ctl(1, fd, events, token)
 
-    def modify(mut self, fd: Int32, events: UInt32, token: UInt64) raises:
+    def modify(self, fd: Int32, events: UInt32, token: UInt64) raises:
         self._ctl(3, fd, events, token)
 
-    def remove(mut self, fd: Int32) raises:
+    def remove(self, fd: Int32) raises:
         self._ctl(2, fd, 0, 0)
 
     def after(mut self, ms: Int, token: UInt64):
