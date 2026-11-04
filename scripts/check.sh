@@ -19,4 +19,6 @@ serve 1
 if timeout 20 $PY tools/client.py "$(cat .work/port)" 50 2 3 >/dev/null 2>&1; then kill $pid; echo "FAIL negative control: broken server passed"; exit 1; fi
 kill $pid; wait $pid 2>/dev/null || true; : > .work/port
 echo "negative control caught"
+awk '/^```mojo$/{f=1;next} /^```$/{f=0} f' README.md | cmp -s - examples/quickstart.mojo || { echo "FAIL doc: README example differs from examples/quickstart.mojo"; exit 1; }
+timeout 60 $M run -I src examples/quickstart.mojo | grep -q "timer 2 fired" || { echo "FAIL example: examples/quickstart.mojo"; exit 1; }
 echo "PASS all"
