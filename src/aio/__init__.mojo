@@ -8,8 +8,9 @@ comptime OUT: UInt32 = 0x004
 comptime ERR: UInt32 = 0x008
 comptime HUP: UInt32 = 0x010
 comptime RDHUP: UInt32 = 0x2000
+comptime ONESHOT: UInt32 = 1 << 30
 comptime ET: UInt32 = 1 << 31
-comptime TIMER: UInt32 = 1 << 30  # set on events produced by after()
+comptime TIMER: UInt32 = 1 << 29  # set on events produced by after()
 comptime _NB = 0o4000
 comptime _CLOEXEC = 0o2000000
 comptime _EINTR = 4
@@ -34,6 +35,15 @@ struct Event(TrivialRegisterPassable, Writable):
 struct _Timer(TrivialRegisterPassable):
     var at: Int
     var token: UInt64
+
+
+def _ready(epfd: Int32, mut out: List[Event], mut buf: List[UInt32], timeout_ms: Int) raises -> Int:
+    var n = Int(external_call["epoll_wait", Int32](epfd, buf.unsafe_ptr(), Int32(len(buf) // 3), Int32(timeout_ms)))
+    if n < 0 and _errno() != _EINTR:
+        raise _fail("epoll_wait")
+    for i in range(max(n, 0)):
+        out.append(Event(UInt64(buf[3 * i + 1]) | (UInt64(buf[3 * i + 2]) << 32), buf[3 * i]))
+    return max(n, 0)
 
 
 struct Loop(Movable):
@@ -91,6 +101,11 @@ struct Loop(Movable):
                 i = m
         return top
 
+    def ready(self, mut out: List[Event], mut buf: List[UInt32], timeout_ms: Int) raises -> Int:
+        """Append ready descriptors to out, no timers. Safe from many threads at once when each passes
+        its own buf (3 UInt32 per event slot); pair with ONESHOT so one thread gets each event."""
+        return _ready(self.epfd, out, buf, timeout_ms)
+
     def wait(mut self, mut out: List[Event], timeout_ms: Int = -1) raises -> Int:
         """Block until a descriptor is ready, a timer is due, or timeout_ms passes (-1: no limit).
         Replaces out's contents with what fired; returns len(out). A signal yields 0 events."""
@@ -99,26 +114,36 @@ struct Loop(Movable):
         if len(self.heap) > 0:
             var due = max(0, (self.heap[0].at - Int(perf_counter_ns()) + 999_999) // 1_000_000)
             t = due if t < 0 else min(t, due)
-        var n = Int(external_call["epoll_wait", Int32](self.epfd, self.buf.unsafe_ptr(), Int32(len(self.buf) // 3), Int32(t)))
-        if n < 0 and _errno() != _EINTR:
-            raise _fail("epoll_wait")
-        for i in range(max(n, 0)):
-            out.append(Event(UInt64(self.buf[3 * i + 1]) | (UInt64(self.buf[3 * i + 2]) << 32), self.buf[3 * i]))
+        _ = _ready(self.epfd, out, self.buf, t)
         var now = Int(perf_counter_ns())
         while len(self.heap) > 0 and self.heap[0].at <= now:
             out.append(Event(self._pop().token, TIMER))
         return len(out)
 
 
-def tcp_listen(port: Int, backlog: Int = 4096) raises -> Int32:
-    """A non-blocking listening TCP socket on 127.0.0.1:port (0 picks a free port, see local_port)."""
+def _ipv4(host: String) raises -> UInt32:
+    """Network-order IPv4 address: a dotted quad, "localhost", or "" / "*" for every interface."""
+    if host == "" or host == "*":
+        return 0
+    var parts = ("127.0.0.1" if host == "localhost" else host).split(".")
+    var ip = UInt32(0)
+    for i in range(len(parts)):
+        var v = Int(parts[i])
+        if len(parts) != 4 or v < 0 or v > 255:
+            raise Error("aio: not an IPv4 address: ", host)
+        ip |= UInt32(v) << UInt32(8 * i)
+    return ip
+
+
+def tcp_listen(port: Int, host: String = "127.0.0.1", backlog: Int = 4096) raises -> Int32:
+    """A non-blocking listening TCP socket on host:port (port 0 picks a free one, see local_port)."""
     var fd = external_call["socket", Int32](Int32(2), Int32(1 | _NB | _CLOEXEC), Int32(0))
     if fd < 0:
         raise _fail("socket")
     var one = Int32(1)
     _ = external_call["setsockopt", Int32](fd, Int32(1), Int32(2), Pointer(to=one), Int32(4))  # SO_REUSEADDR
     # sockaddr_in: AF_INET, port big-endian, 127.0.0.1, zero padding
-    var addr = SIMD[DType.uint32, 4](UInt32(2) | (UInt32(port & 0xFF) << 24) | (UInt32(port >> 8) << 16), 0x0100007F, 0, 0)
+    var addr = SIMD[DType.uint32, 4](UInt32(2) | (UInt32(port & 0xFF) << 24) | (UInt32(port >> 8) << 16), _ipv4(host), 0, 0)
     if external_call["bind", Int32](fd, Pointer(to=addr), Int32(16)) != 0 or external_call["listen", Int32](fd, Int32(backlog)) != 0:
         var e = _fail("bind/listen")
         close(fd)
@@ -135,13 +160,16 @@ def local_port(fd: Int32) raises -> Int:
 
 
 def accept(fd: Int32) raises -> Int32:
-    """The next pending connection, non-blocking; -1 when none is waiting."""
+    """The next pending connection (non-blocking, TCP_NODELAY); -1 when none is waiting, or when it
+    was aborted or the process is out of descriptors (keep serving, retry on the next event)."""
     while True:
         var c = external_call["accept4", Int32](fd, Int(0), Int(0), Int32(_NB | _CLOEXEC))
         if c >= 0:
+            var one = Int32(1)
+            _ = external_call["setsockopt", Int32](c, Int32(6), Int32(1), Pointer(to=one), Int32(4))
             return c
         var e = _errno()
-        if e == _EAGAIN:
+        if e == _EAGAIN or e == 103 or e == 24 or e == 23:  # ECONNABORTED, EMFILE, ENFILE
             return -1
         if e != _EINTR:
             raise _fail("accept4")
