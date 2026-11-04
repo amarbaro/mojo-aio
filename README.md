@@ -8,24 +8,16 @@ import aio
 
 
 def main() raises:
-    var lfd = aio.tcp_listen(0)  # 127.0.0.1, a free port
     var loop = aio.Loop()
-    loop.add(lfd, aio.IN, 1)
     loop.after(10, 2)  # one TIMER event in 10 ms
     var evs = List[aio.Event]()
-    while True:
-        _ = loop.wait(evs)
-        for ev in evs:
-            if ev.events & aio.TIMER:
-                print("timer", ev.token, "fired; port", aio.local_port(lfd) > 0)
-                aio.close(lfd)
-                return
+    _ = loop.wait(evs)
+    print("timer", evs[0].token, "fired")
 ```
 
 | Server | req/s | server CPU per request | peak RSS |
 |---|---|---|---|
 | mojo-aio | 100k to 107k | 4.5 us | 11 MB |
-Baselines and method: [docs/perf.md](docs/perf.md)
 <!-- /install -->
 
 epoll event loop for Mojo: readiness events, one-shot timers, non-blocking TCP. Callback-free:
@@ -35,28 +27,7 @@ storage and no allocation per event. 163 lines of code, libc only, Linux.
 Same server CPU per request as uvloop, a third of Python asyncio's, half the memory of either
 (echo ping-pong, [docs/perf.md](docs/perf.md)).
 
-```mojo
-import aio
-
-
-def main() raises:
-    var lfd = aio.tcp_listen(0)  # 127.0.0.1, a free port
-    var loop = aio.Loop()
-    loop.add(lfd, aio.IN, 1)
-    loop.after(10, 2)  # one TIMER event in 10 ms
-    var evs = List[aio.Event]()
-    while True:
-        _ = loop.wait(evs)
-        for ev in evs:
-            if ev.events & aio.TIMER:
-                print("timer", ev.token, "fired; port", aio.local_port(lfd) > 0)
-                aio.close(lfd)
-                return
-```
-
-## Install
-
-Requires Mojo 1.2 on Linux. `mojo run -I path/to/mojo-aio/src app.mojo`, or copy `src/aio/` into your project.
+Requires Mojo 1.2 on Linux.
 
 ## API
 
