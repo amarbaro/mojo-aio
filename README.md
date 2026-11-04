@@ -46,7 +46,7 @@ Requires Mojo 1.2 on Linux.
 | `accept(fd)` | next connection (TCP_NODELAY) or -1 |
 | `read(fd, buf)`, `write(fd, span)` | bytes, 0 at EOF, -1 not ready, -2 error; no SIGPIPE |
 
-[docs/design.md](docs/design.md) explains the choices. Used by [mojo-bento](https://github.com/amarbaro/mojo-bento)'s HTTP server.
+[docs/design.md, [docs/api.md](docs/api.md)](docs/design.md) explains the choices. Used by [mojo-bento](https://github.com/amarbaro/mojo-bento)'s HTTP server.
 
 ## Check
 
