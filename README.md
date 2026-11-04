@@ -1,5 +1,33 @@
 # mojo-aio
 
+<!-- install -->
+Install: `pixi add mojo-aio` once published. For now: `git clone https://github.com/amarbaro/mojo-aio`, then `mojo run -I mojo-aio/src app.mojo`.
+
+```mojo
+import aio
+
+
+def main() raises:
+    var lfd = aio.tcp_listen(0)  # 127.0.0.1, a free port
+    var loop = aio.Loop()
+    loop.add(lfd, aio.IN, 1)
+    loop.after(10, 2)  # one TIMER event in 10 ms
+    var evs = List[aio.Event]()
+    while True:
+        _ = loop.wait(evs)
+        for ev in evs:
+            if ev.events & aio.TIMER:
+                print("timer", ev.token, "fired; port", aio.local_port(lfd) > 0)
+                aio.close(lfd)
+                return
+```
+
+| Server | req/s | server CPU per request | peak RSS |
+|---|---|---|---|
+| mojo-aio | 100k to 107k | 4.5 us | 11 MB |
+Baselines and method: [docs/perf.md](docs/perf.md)
+<!-- /install -->
+
 epoll event loop for Mojo: readiness events, one-shot timers, non-blocking TCP. Callback-free:
 `wait()` fills a list you own with `(token, events)` and you dispatch, so there is no closure
 storage and no allocation per event. 163 lines of code, libc only, Linux.
