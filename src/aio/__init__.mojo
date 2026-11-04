@@ -1,0 +1,173 @@
+"""epoll event loop: readiness events, one-shot timers, non-blocking TCP. Callback-free: wait()
+fills a caller-owned list of (token, events), the caller dispatches."""
+from std.ffi import external_call, c_ssize_t
+from std.time import perf_counter_ns
+
+comptime IN: UInt32 = 0x001
+comptime OUT: UInt32 = 0x004
+comptime ERR: UInt32 = 0x008
+comptime HUP: UInt32 = 0x010
+comptime RDHUP: UInt32 = 0x2000
+comptime ET: UInt32 = 1 << 31
+comptime TIMER: UInt32 = 1 << 30  # set on events produced by after()
+comptime _NB = 0o4000
+comptime _CLOEXEC = 0o2000000
+comptime _EINTR = 4
+comptime _EAGAIN = 11
+
+
+def _errno() -> Int:
+    return Int(external_call["__errno_location", Pointer[Int32, MutAnyOrigin]]()[])
+
+
+def _fail(what: StaticString) -> Error:
+    return Error("aio: ", what, " failed (errno ", _errno(), ")")
+
+
+@fieldwise_init
+struct Event(TrivialRegisterPassable, Writable):
+    var token: UInt64
+    var events: UInt32
+
+
+@fieldwise_init
+struct _Timer(TrivialRegisterPassable):
+    var at: Int
+    var token: UInt64
+
+
+struct Loop(Movable):
+    var epfd: Int32
+    var buf: List[UInt32]  # packed struct epoll_event: events, data lo, data hi
+    var heap: List[_Timer]  # min-heap on deadline (ns, monotonic)
+
+    def __init__(out self, max_events: Int = 1024) raises:
+        self.epfd = external_call["epoll_create1", Int32](Int32(_CLOEXEC))
+        if self.epfd < 0:
+            raise _fail("epoll_create1")
+        self.buf = List[UInt32](length=3 * max_events, fill=0)
+        self.heap = List[_Timer]()
+
+    def __deinit__(deinit self):
+        _ = external_call["close", Int32](self.epfd)
+
+    def _ctl(mut self, op: Int32, fd: Int32, events: UInt32, token: UInt64) raises:
+        var ev = SIMD[DType.uint32, 4](events, UInt32(token & 0xFFFFFFFF), UInt32(token >> 32), 0)
+        if external_call["epoll_ctl", Int32](self.epfd, op, fd, Pointer(to=ev)) != 0:
+            raise _fail("epoll_ctl")
+
+    def add(mut self, fd: Int32, events: UInt32, token: UInt64) raises:
+        self._ctl(1, fd, events, token)
+
+    def modify(mut self, fd: Int32, events: UInt32, token: UInt64) raises:
+        self._ctl(3, fd, events, token)
+
+    def remove(mut self, fd: Int32) raises:
+        self._ctl(2, fd, 0, 0)
+
+    def after(mut self, ms: Int, token: UInt64):
+        """One TIMER event carrying token, no earlier than ms from now."""
+        self.heap.append(_Timer(Int(perf_counter_ns()) + ms * 1_000_000, token))
+        var i = len(self.heap) - 1
+        while i > 0 and self.heap[(i - 1) // 2].at > self.heap[i].at:
+            self.heap.swap_elements(i, (i - 1) // 2)
+            i = (i - 1) // 2
+
+    def _pop(mut self) -> _Timer:
+        var top = self.heap[0]
+        var last = self.heap.pop()
+        var n = len(self.heap)
+        if n > 0:
+            self.heap[0] = last
+            var i = 0
+            while True:
+                var m = i
+                for c in range(2 * i + 1, min(2 * i + 3, n)):
+                    if self.heap[c].at < self.heap[m].at:
+                        m = c
+                if m == i:
+                    break
+                self.heap.swap_elements(i, m)
+                i = m
+        return top
+
+    def wait(mut self, mut out: List[Event], timeout_ms: Int = -1) raises -> Int:
+        """Block until a descriptor is ready, a timer is due, or timeout_ms passes (-1: no limit).
+        Replaces out's contents with what fired; returns len(out). A signal yields 0 events."""
+        out.clear()
+        var t = timeout_ms
+        if len(self.heap) > 0:
+            var due = max(0, (self.heap[0].at - Int(perf_counter_ns()) + 999_999) // 1_000_000)
+            t = due if t < 0 else min(t, due)
+        var n = Int(external_call["epoll_wait", Int32](self.epfd, self.buf.unsafe_ptr(), Int32(len(self.buf) // 3), Int32(t)))
+        if n < 0 and _errno() != _EINTR:
+            raise _fail("epoll_wait")
+        for i in range(max(n, 0)):
+            out.append(Event(UInt64(self.buf[3 * i + 1]) | (UInt64(self.buf[3 * i + 2]) << 32), self.buf[3 * i]))
+        var now = Int(perf_counter_ns())
+        while len(self.heap) > 0 and self.heap[0].at <= now:
+            out.append(Event(self._pop().token, TIMER))
+        return len(out)
+
+
+def tcp_listen(port: Int, backlog: Int = 4096) raises -> Int32:
+    """A non-blocking listening TCP socket on 127.0.0.1:port (0 picks a free port, see local_port)."""
+    var fd = external_call["socket", Int32](Int32(2), Int32(1 | _NB | _CLOEXEC), Int32(0))
+    if fd < 0:
+        raise _fail("socket")
+    var one = Int32(1)
+    _ = external_call["setsockopt", Int32](fd, Int32(1), Int32(2), Pointer(to=one), Int32(4))  # SO_REUSEADDR
+    # sockaddr_in: AF_INET, port big-endian, 127.0.0.1, zero padding
+    var addr = SIMD[DType.uint32, 4](UInt32(2) | (UInt32(port & 0xFF) << 24) | (UInt32(port >> 8) << 16), 0x0100007F, 0, 0)
+    if external_call["bind", Int32](fd, Pointer(to=addr), Int32(16)) != 0 or external_call["listen", Int32](fd, Int32(backlog)) != 0:
+        var e = _fail("bind/listen")
+        close(fd)
+        raise e^
+    return fd
+
+
+def local_port(fd: Int32) raises -> Int:
+    var addr = SIMD[DType.uint32, 4](0)
+    var len = Int32(16)
+    if external_call["getsockname", Int32](fd, Pointer(to=addr), Pointer(to=len)) != 0:
+        raise _fail("getsockname")
+    return Int(((addr[0] >> 24) & 0xFF) | ((addr[0] >> 8) & 0xFF00))
+
+
+def accept(fd: Int32) raises -> Int32:
+    """The next pending connection, non-blocking; -1 when none is waiting."""
+    while True:
+        var c = external_call["accept4", Int32](fd, Int(0), Int(0), Int32(_NB | _CLOEXEC))
+        if c >= 0:
+            return c
+        var e = _errno()
+        if e == _EAGAIN:
+            return -1
+        if e != _EINTR:
+            raise _fail("accept4")
+
+
+def read(fd: Int32, mut buf: List[UInt8]) -> Int:
+    """Fill buf (its full length) from fd. Bytes read; 0 at end of stream; -1 not ready; -2 error."""
+    while True:
+        var n = Int(external_call["read", c_ssize_t](fd, buf.unsafe_ptr(), len(buf)))
+        if n >= 0:
+            return n
+        var e = _errno()
+        if e != _EINTR:
+            return -1 if e == _EAGAIN else -2
+
+
+def write(fd: Int32, data: Span[UInt8, _]) -> Int:
+    """Write what fits now, no SIGPIPE. Bytes written; -1 not ready; -2 error (peer gone)."""
+    while True:
+        var n = Int(external_call["send", c_ssize_t](fd, data.unsafe_ptr(), len(data), Int32(0x4000)))
+        if n >= 0:
+            return n
+        var e = _errno()
+        if e != _EINTR:
+            return -1 if e == _EAGAIN else -2
+
+
+def close(fd: Int32):
+    _ = external_call["close", Int32](fd)
