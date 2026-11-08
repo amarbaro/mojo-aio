@@ -1,6 +1,6 @@
 [project]
 name = "mojo-aio"
-version = "0.1.0"
+version = "0.1.1"
 description = "epoll event loop for Mojo: readiness events, timers, non-blocking TCP"
 license = "Apache-2.0"
 requires-python = ">=3.11,<3.15"
