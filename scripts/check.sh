@@ -3,7 +3,7 @@
 # byte checked, no fd leak after they close, and a negative control that must fail.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-mkdir -p .work; M=.venv/bin/mojo; PY="python3 -I"
+mkdir -p .work; M=${MOJO:-.venv/bin/mojo}; PY="python3 -I"
 ulimit -n 65536 || { echo "FAIL setup: need 65536 fds"; exit 1; }
 for t in echo timers; do
   timeout 120 $M build -I src tests/$t.mojo -o .work/$t 2>.work/build.err || { echo "FAIL build: tests/$t.mojo"; cat .work/build.err; exit 1; }
@@ -20,5 +20,6 @@ if timeout 20 $PY tools/client.py "$(cat .work/port)" 50 2 3 >/dev/null 2>&1; th
 kill $pid; wait $pid 2>/dev/null || true; : > .work/port
 echo "negative control caught"
 awk '/^```mojo$/{f=1;next} /^```$/{f=0} f' README.md | cmp -s - examples/quickstart.mojo || { echo "FAIL doc: README example differs from examples/quickstart.mojo"; exit 1; }
-timeout 60 $M run -I src examples/quickstart.mojo | grep -q "timer 2 fired" || { echo "FAIL example: examples/quickstart.mojo"; exit 1; }
+out=$(timeout 60 $M run -I src examples/quickstart.mojo) || { echo "FAIL example: examples/quickstart.mojo"; exit 1; }
+grep -q "timer 2 fired" <<<"$out" || { echo "FAIL example: examples/quickstart.mojo"; exit 1; }
 echo "PASS all"
