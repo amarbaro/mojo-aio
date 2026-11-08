@@ -3,7 +3,7 @@
 # byte checked, no fd leak after they close, and a negative control that must fail.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-mkdir -p .work; M=.venv/bin/mojo; PY="python3 -I"
+mkdir -p .work; M=${MOJO:-.venv/bin/mojo}; PY="python3 -I"
 ulimit -n 65536 || { echo "FAIL setup: need 65536 fds"; exit 1; }
 for t in echo timers; do
   timeout 120 $M build -I src tests/$t.mojo -o .work/$t 2>.work/build.err || { echo "FAIL build: tests/$t.mojo"; cat .work/build.err; exit 1; }
