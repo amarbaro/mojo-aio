@@ -5,7 +5,8 @@
 <!-- /badges -->
 
 <!-- install -->
-Install: `pixi add mojo-aio` once published. For now: `git clone https://github.com/amarbaro/mojo-aio`, then `mojo run -I mojo-aio/src app.mojo`.
+Install: `pixi workspace channel add https://conda.modular.com/max https://prefix.dev/amarbaro/amarbaro`, then `pixi add mojo-aio` (import `aio`). From source: `git clone https://github.com/amarbaro/mojo-aio`, then `mojo run -I mojo-aio/src app.mojo`.
+Toolchains: Mojo 1.2 stable, and the nightly 1.3.0.dev2026110805 in the weekly [mojo-libs](https://github.com/amarbaro/mojo-libs) matrix (36 libraries on stable, 35 on nightly).
 
 ```mojo
 import aio
@@ -47,6 +48,8 @@ Requires Mojo 1.2 on Linux.
 | `read(fd, buf)`, `write(fd, span)` | bytes, 0 at EOF, -1 not ready, -2 error; no SIGPIPE |
 
 [docs/design.md](docs/design.md) explains the choices, [docs/api.md](docs/api.md) lists every call. Used by [mojo-bento](https://github.com/amarbaro/mojo-bento)'s HTTP server.
+
+**Limits:** Linux only (epoll). `wait()` and the timer heap belong to one thread; only `ready()` is meant for several threads, paired with `ONESHOT`. Per-connection I/O returns codes (-1 not ready, -2 gone) instead of raising.
 
 ## Check
 
