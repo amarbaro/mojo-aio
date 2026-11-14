@@ -1,0 +1,4 @@
+name = "mojo-aio"
+version = "0.1.1"
+description = "epoll event loop for Mojo: readiness events, timers, non-blocking TCP"
+tags = ["mojo", "async", "epoll", "network"]
